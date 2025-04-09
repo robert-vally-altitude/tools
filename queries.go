@@ -8,6 +8,7 @@ import (
 	"os"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/joho/godotenv"
 )
 
 var queries = map[string]string{
@@ -84,12 +85,19 @@ var queries = map[string]string{
 }
 
 func printUsage() {
-	fmt.Println("Usage: go run queries.go <query> -server=<host> -username=<username> -password=<password> -dbname=<dbname>")
+	fmt.Println("Usage: go run queries.go <query> [-f=<env_file>] [-server=<host> -port=<port> -username=<username> -password=<password> -dbname=<dbname>]")
+	fmt.Println("")
+	fmt.Println("Either provide a valid .env file using -f flag (defaults to .env)")
+	fmt.Println("or specify all connection parameters via command line flags.")
 	fmt.Println("")
 	fmt.Println("Available queries:")
 	for k, _ := range queries {
 		fmt.Printf("  %s\n", k)
 	}
+}
+
+func hasRequiredFlags(server, port, username, password, dbname string) bool {
+	return server != "" && port != "" && username != "" && password != "" && dbname != ""
 }
 
 func main() {
@@ -106,32 +114,69 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Define command-line flags
-	server := flag.String("server", "127.0.0.1", "Database server address")
-	username := flag.String("username", "root", "Database username")
+	envFile := flag.String("f", ".env", "Path to the environment file")
+	server := flag.String("server", "", "Database server address")
+	port := flag.String("port", "", "Database port")
+	username := flag.String("username", "", "Database username")
 	password := flag.String("password", "", "Database password")
-	dbname := flag.String("dbname", "test", "Database name")
+	dbname := flag.String("dbname", "", "Database name")
 
-	// Parse the flags
 	flag.CommandLine.Parse(os.Args[2:])
 
-	// Define the DSN (Data Source Name)
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:3306)/%s", *username, *password, *server, *dbname)
+	envFileLoaded := false
+	if err := godotenv.Load(*envFile); err == nil {
+		envFileLoaded = true
+	} else {
+		if *envFile != ".env" {
+			log.Printf("Warning: Could not load specified env file %s: %v", *envFile, err)
+		}
+	}
 
-	// Open the database connection
-	db, err := sql.Open("mysql", dsn)
+	serverAddr := *server
+	if serverAddr == "" {
+		serverAddr = os.Getenv("DB_SERVER")
+	}
+
+	dbPort := *port
+	if dbPort == "" {
+		dbPort = os.Getenv("DB_PORT")
+	}
+
+	user := *username
+	if user == "" {
+		user = os.Getenv("DB_USERNAME")
+	}
+
+	pass := *password
+	if pass == "" {
+		pass = os.Getenv("DB_PASSWORD")
+	}
+
+	dbName := *dbname
+	if dbName == "" {
+		dbName = os.Getenv("DB_NAME")
+	}
+
+	if !hasRequiredFlags(serverAddr, dbPort, user, pass, dbName) {
+		if !envFileLoaded {
+			log.Fatalf("Error: No environment file found at %s and not all connection parameters provided via flags.\n\nPlease either:\n1. Create a .env file\n2. Specify an environment file with -f\n3. Provide all connection parameters via command line flags", *envFile)
+		}
+		log.Fatalf("Error: Missing required database connection parameters. Please check your environment file or provide all parameters via command line flags")
+	}
+
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, serverAddr, dbPort, dbName)
+
+	dbConn, err := sql.Open("mysql", dsn)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer dbConn.Close()
 
-	// Ping the database to ensure the connection is established
-	if err := db.Ping(); err != nil {
+	if err := dbConn.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
-	// Execute the query
-	rows, err := db.Query(sqlQuery)
+	rows, err := dbConn.Query(sqlQuery)
 	if err != nil {
 		log.Fatalf("Failed to execute query: %v", err)
 	}
@@ -157,7 +202,6 @@ func main() {
 		valuePtrs[i] = &values[i]
 	}
 
-	// Iterate through the result set
 	for rows.Next() {
 		err := rows.Scan(valuePtrs...)
 		if err != nil {
@@ -181,7 +225,6 @@ func main() {
 		fmt.Println("")
 	}
 
-	// Check for any errors encountered during iteration
 	if err := rows.Err(); err != nil {
 		log.Fatalf("Error during row iteration: %v", err)
 	}
