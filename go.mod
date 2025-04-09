@@ -1,4 +1,4 @@
-module go-test
+module tools
 
 go 1.22.1
 
