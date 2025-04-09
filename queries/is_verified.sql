@@ -4,4 +4,4 @@ SELECT
     email_verified_at, 
     created_at
 FROM email_verifications
-WHERE email = ? 
+WHERE email = ?{email} 

@@ -98,10 +98,16 @@ func printUsage() {
 		log.Printf("Warning: Failed to list available queries: %v", err)
 	}
 
-	fmt.Println("Usage: go run queries.go <query> [-f=<env_file>] [-server=<host> -port=<port> -username=<username> -password=<password> -dbname=<dbname>]")
+	fmt.Println("Usage: go run queries.go <query> [-f=<env_file>] [-server=<host> -port=<port> -username=<username> -password=<password> -dbname=<dbname>] [param1=value1 param2=value2 ...]")
 	fmt.Println("")
 	fmt.Println("Either provide a valid .env file using -f flag (defaults to .env)")
 	fmt.Println("or specify all connection parameters via command line flags.")
+	fmt.Println("")
+	fmt.Println("Parameters:")
+	fmt.Println("  Query parameters should be passed as key=value pairs.")
+	fmt.Println("  For example:")
+	fmt.Println("    go run queries.go -f .env.local is-verified email=user@example.com")
+	fmt.Println("    go run queries.go -f .env.prod new-user-entries date=2024-03-20")
 	fmt.Println("")
 	fmt.Println("Available queries:")
 	for _, query := range queries {
@@ -115,6 +121,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	envFile := ".env" 
+	for i, field := range os.Args {
+		if field == "-f" {
+			envFile = os.Args[i+1]
+			os.Args = append(os.Args[:i], os.Args[i+2:]...)
+		}
+	}
+
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
 	queryName := os.Args[1]
 	sqlQuery, err := loadQueryFromFile(queryName)
 	if err != nil {
@@ -123,15 +142,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	envFile := flag.String("f", ".env", "Path to the environment file")
 	server := flag.String("server", "", "Database server address")
 	port := flag.String("port", "", "Database port")
 	username := flag.String("username", "", "Database username")
 	password := flag.String("password", "", "Database password")
 	dbname := flag.String("dbname", "", "Database name")
+	
 	flag.CommandLine.Parse(os.Args[2:])
 
-	config, err := loadConfig(*envFile)
+	params := make(map[string]string)
+	for _, arg := range flag.Args() {
+		parts := strings.SplitN(arg, "=", 2)
+		if len(parts) == 2 {
+			params[parts[0]] = parts[1]
+		}
+	}
+
+	config, err := loadConfig(envFile)
 	if err != nil {
 		log.Printf("Warning: %v", err)
 	}
@@ -166,7 +193,25 @@ func main() {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
-	rows, err := db.Query(sqlQuery)
+	for paramName, _ := range params {
+		placeholder := fmt.Sprintf("?{%s}", paramName)
+		sqlQuery = strings.ReplaceAll(sqlQuery, placeholder, "?")
+	}
+
+	stmt, err := db.Prepare(sqlQuery)
+	if err != nil {
+		log.Fatalf("Failed to prepare query: %v", err)
+	}
+	defer stmt.Close()
+
+	paramValues := make([]interface{}, len(params))
+	i := 0
+	for _, value := range params {
+		paramValues[i] = value
+		i++
+	}
+
+	rows, err := stmt.Query(paramValues...)
 	if err != nil {
 		log.Fatalf("Failed to execute query: %v", err)
 	}
