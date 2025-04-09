@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
@@ -84,6 +85,59 @@ var queries = map[string]string{
     `,
 }
 
+type Config struct {
+	Server   string
+	Port     string
+	Username string
+	Password string
+	DBName   string
+}
+
+func (c *Config) DSN() string {
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", 
+		c.Username, c.Password, c.Server, c.Port, c.DBName)
+}
+
+func (c *Config) Validate() error {
+	var missing []string
+	if c.Server == "" {
+		missing = append(missing, "server")
+	}
+	if c.Port == "" {
+		missing = append(missing, "port")
+	}
+	if c.Username == "" {
+		missing = append(missing, "username")
+	}
+	if c.Password == "" {
+		missing = append(missing, "password")
+	}
+	if c.DBName == "" {
+		missing = append(missing, "database name")
+	}
+	
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required parameters: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func loadConfig(envFile string) (*Config, error) {
+	if err := godotenv.Load(envFile); err != nil && envFile != ".env" {
+		return nil, fmt.Errorf("could not load env file %s: %v", envFile, err)
+	}
+
+	config := &Config{
+		Server:   os.Getenv("DB_SERVER"),
+		Port:     os.Getenv("DB_PORT"),
+		Username: os.Getenv("DB_USERNAME"),
+		Password: os.Getenv("DB_PASSWORD"),
+		DBName:   os.Getenv("DB_NAME"),
+	}
+
+	return config, nil
+}
+
 func printUsage() {
 	fmt.Println("Usage: go run queries.go <query> [-f=<env_file>] [-server=<host> -port=<port> -username=<username> -password=<password> -dbname=<dbname>]")
 	fmt.Println("")
@@ -94,10 +148,6 @@ func printUsage() {
 	for k, _ := range queries {
 		fmt.Printf("  %s\n", k)
 	}
-}
-
-func hasRequiredFlags(server, port, username, password, dbname string) bool {
-	return server != "" && port != "" && username != "" && password != "" && dbname != ""
 }
 
 func main() {
@@ -120,63 +170,45 @@ func main() {
 	username := flag.String("username", "", "Database username")
 	password := flag.String("password", "", "Database password")
 	dbname := flag.String("dbname", "", "Database name")
-
 	flag.CommandLine.Parse(os.Args[2:])
 
-	envFileLoaded := false
-	if err := godotenv.Load(*envFile); err == nil {
-		envFileLoaded = true
-	} else {
-		if *envFile != ".env" {
-			log.Printf("Warning: Could not load specified env file %s: %v", *envFile, err)
-		}
+	config, err := loadConfig(*envFile)
+	if err != nil {
+		log.Printf("Warning: %v", err)
 	}
 
-	serverAddr := *server
-	if serverAddr == "" {
-		serverAddr = os.Getenv("DB_SERVER")
+	// Override config with command line flags if provided
+	if *server != "" {
+		config.Server = *server
+	}
+	if *port != "" {
+		config.Port = *port
+	}
+	if *username != "" {
+		config.Username = *username
+	}
+	if *password != "" {
+		config.Password = *password
+	}
+	if *dbname != "" {
+		config.DBName = *dbname
 	}
 
-	dbPort := *port
-	if dbPort == "" {
-		dbPort = os.Getenv("DB_PORT")
+	if err := config.Validate(); err != nil {
+		log.Fatalf("Configuration error: %v\n\nPlease either:\n1. Create a .env file\n2. Specify an environment file with -f\n3. Provide all connection parameters via command line flags", err)
 	}
 
-	user := *username
-	if user == "" {
-		user = os.Getenv("DB_USERNAME")
-	}
-
-	pass := *password
-	if pass == "" {
-		pass = os.Getenv("DB_PASSWORD")
-	}
-
-	dbName := *dbname
-	if dbName == "" {
-		dbName = os.Getenv("DB_NAME")
-	}
-
-	if !hasRequiredFlags(serverAddr, dbPort, user, pass, dbName) {
-		if !envFileLoaded {
-			log.Fatalf("Error: No environment file found at %s and not all connection parameters provided via flags.\n\nPlease either:\n1. Create a .env file\n2. Specify an environment file with -f\n3. Provide all connection parameters via command line flags", *envFile)
-		}
-		log.Fatalf("Error: Missing required database connection parameters. Please check your environment file or provide all parameters via command line flags")
-	}
-
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, serverAddr, dbPort, dbName)
-
-	dbConn, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("mysql", config.DSN())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer dbConn.Close()
+	defer db.Close()
 
-	if err := dbConn.Ping(); err != nil {
+	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
-	rows, err := dbConn.Query(sqlQuery)
+	rows, err := db.Query(sqlQuery)
 	if err != nil {
 		log.Fatalf("Failed to execute query: %v", err)
 	}
